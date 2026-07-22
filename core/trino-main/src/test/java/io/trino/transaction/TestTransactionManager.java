@@ -16,8 +16,11 @@ package io.trino.transaction;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import io.airlift.units.Duration;
+import io.trino.Session;
+import io.trino.metadata.Metadata;
 import io.trino.plugin.tpch.TpchPlugin;
 import io.trino.spi.connector.ConnectorMetadata;
+import io.trino.spi.metrics.Metrics;
 import io.trino.testing.QueryRunner;
 import io.trino.testing.StandaloneQueryRunner;
 import org.junit.jupiter.api.AfterAll;
@@ -150,6 +153,30 @@ public class TestTransactionManager
             getFutureValue(transactionManager.asyncAbort(transactionId));
 
             assertThat(transactionManager.getAllTransactionInfos()).isEmpty();
+        }
+    }
+
+    @Test
+    public void testMetricsCollectionAfterTransactionFinishes()
+    {
+        try (QueryRunner queryRunner = new StandaloneQueryRunner(TEST_SESSION)) {
+            TransactionManager transactionManager = queryRunner.getTransactionManager();
+            Metadata metadata = queryRunner.getPlannerContext().getMetadata();
+
+            queryRunner.installPlugin(new TpchPlugin());
+            queryRunner.createCatalog(TEST_CATALOG_NAME, "tpch", ImmutableMap.of());
+
+            TransactionId transactionId = transactionManager.beginTransaction(false);
+            Session session = TEST_SESSION.beginTransactionId(transactionId, transactionManager, queryRunner.getAccessControl());
+
+            // register the catalog as active in the transaction, materializing the transactional ConnectorMetadata
+            transactionManager.getOptionalCatalogMetadata(transactionId, TEST_CATALOG_NAME).orElseThrow().getMetadata(session);
+
+            getFutureValue(transactionManager.asyncCommit(transactionId));
+
+            // metrics collection races with query completion: the transaction is already finished, so
+            // getMetrics must tolerate it and report empty metrics rather than propagating the failure
+            assertThat(metadata.getMetrics(session, TEST_CATALOG_NAME)).isEqualTo(Metrics.EMPTY);
         }
     }
 

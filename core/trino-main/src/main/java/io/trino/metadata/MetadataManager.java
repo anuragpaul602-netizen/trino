@@ -26,6 +26,7 @@ import com.google.inject.Inject;
 import io.airlift.log.Logger;
 import io.airlift.slice.Slice;
 import io.trino.FeaturesConfig;
+import io.trino.NotInTransactionException;
 import io.trino.Session;
 import io.trino.connector.CatalogHandle;
 import io.trino.connector.system.GlobalSystemConnector;
@@ -498,9 +499,17 @@ public final class MetadataManager
     @Override
     public Metrics getMetrics(Session session, String catalogName)
     {
-        return transactionManager.getRequiredCatalogMetadata(session.getRequiredTransactionId(), catalogName)
-                .getMetadata(session)
-                .getMetrics(session.toConnectorSession());
+        try {
+            return transactionManager.getRequiredCatalogMetadata(session.getRequiredTransactionId(), catalogName)
+                    .getMetadata(session)
+                    .getMetrics(session.toConnectorSession());
+        }
+        catch (NotInTransactionException e) {
+            // Metrics collection races with query completion; if the catalog transaction has
+            // already been committed or aborted the metadata is no longer accessible, so
+            // report empty metrics for this best-effort collection
+            return Metrics.EMPTY;
+        }
     }
 
     @Override
